@@ -7,7 +7,7 @@ require 'csv'
 require 'json'
 require 'net/https'
 require 'openssl'
-require 'thread'
+require 'resolv'
 require 'uri'
 
 class SymantecChecker
@@ -90,6 +90,30 @@ class SymantecChecker
     'ac50b5fb738aed6cb781cc35fbfff7786f77109ada7c08867c04a573fd5cf9ee',
   ]
 
+  ROOTS = Dir['trust_stores_observatory/certificates/*'].map do |file|
+    OpenSSL::X509::Certificate.new(IO.read(file))
+  end.group_by do |cert|
+    cert.extensions.find do |extension|
+      extension.to_h['oid'] == 'subjectKeyIdentifier'
+    end.to_h['value']
+  end
+
+  def initialize(host)
+    @host = host
+  end
+
+  def run
+    hosts = [@host]
+
+    unless @host.start_with?('www.')
+      candidate = "www.#{@host}"
+      # Only add the host / include in stats if the www version resolves via DNS
+      hosts << candidate if Resolv.getaddresses(candidate).length > 0
+    end
+
+    hosts.map { |host| check_host(host) }
+  end
+
   def get_chain(host)
     uri = URI("https://#{host}")
     opts = {
@@ -98,11 +122,29 @@ class SymantecChecker
       read_timeout: 2,
       ssl_timeout: 2
     }
-    Net::HTTP.start(uri.host, uri.port, opts) do |http|
-      return http.instance_variable_get(:@socket).io.peer_cert_chain.map do |pem|
+
+    chain = Net::HTTP.start(uri.host, uri.port, opts) do |http|
+      http.instance_variable_get(:@socket).io.peer_cert_chain.map do |pem|
         OpenSSL::X509::Certificate.new(pem)
       end
     end
+
+    authority_key_identifier = chain.last.extensions.find do |extension|
+      extension.to_h['oid'] == 'authorityKeyIdentifier'
+    end
+
+    if authority_key_identifier
+      key_id = authority_key_identifier.to_h['value'].match(/^keyid:(.*)$/)[1].upcase
+      # There might be multiple certificates with the same subjectKeyIdentifier
+      # In this case this the last entries in the array don't make a "chain", but contain candidate
+      # root certificates. If any of them are on the blacklist, we will consider the domain as
+      # having a bad symantec cert, even if a different path might treat it as valid. Path building
+      # is hard. This should lead to little (if any) overcounting, as almost all roots in the
+      # trust_stores_observatory do contain a single cert per subjectKeyIdentifier
+      chain.concat(ROOTS[key_id]) if ROOTS.key?(key_id)
+    end
+
+    chain
   end
 
   def check_host(host)
@@ -114,11 +156,15 @@ class SymantecChecker
 
     if (SYMANTEC_BLACKLIST & public_key_hashes).length > 0 &&
         (SYMANTEC_MANAGED & public_key_hashes).empty? &&
-        (SYMANTEC_EXCEPTIONS & public_key_hashes).empty? &&
-        (chain.first.not_before < Time.at(1464739200).utc ||  # 2016-06-01 00:00:00 UTC
-        chain.first.not_before >= Time.at(1512086400).utc)    # 2017-12-01 00:00:00 UTC
+        (SYMANTEC_EXCEPTIONS & public_key_hashes).empty?
       puts "#{host} uses bad Symantec certificate"
-      return [host, :bad]
+
+      if (chain.first.not_before < Time.at(1464739200).utc ||   # 2016-06-01 00:00:00 UTC
+          chain.first.not_before >= Time.at(1512086400).utc)    # 2017-12-01 00:00:00 UTC
+        return [host, :M66]
+      else
+        return [host, :M70]
+      end
     else
       return [host, :good]
     end
@@ -127,8 +173,8 @@ class SymantecChecker
   end
 end
 
-def main
-  hosts = CSV.open('top-1m.csv') do |csv|
+def main(file)
+  hosts = CSV.open(file) do |csv|
     csv.map do |index, host|
       host
     end
@@ -136,14 +182,14 @@ def main
   puts "Read #{hosts.length} hosts"
 
   start = Time.now.to_i
-  results = Parallel.map(hosts, in_processes: 16, progress: 'Scanning hosts') do |host|
-    SymantecChecker.new.check_host(host)
+  results = Parallel.map(hosts, in_processes: 32, progress: 'Scanning hosts') do |host|
+    SymantecChecker.new(host).run
   end
 
-  IO.write('results.json', results.to_json)
+  IO.write("#{file}_results.json", results.to_json)
   puts "Took #{Time.now.to_i - start} seconds"
 end
 
 if __FILE__ == $0
-  main
+  main(ARGV[0])
 end
