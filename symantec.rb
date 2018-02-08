@@ -98,6 +98,11 @@ class SymantecChecker
     end.to_h['value']
   end
 
+  # times from https://security.googleblog.com/2017/09/chromes-plan-to-distrust-symantec.html
+  # with a 1-week fudge factor
+  M66_DEADLINE = Time.utc(2018, 4, 17+7)
+  M70_DEADLINE = Time.utc(2018, 10, 23+7)
+
   def initialize(host)
     @host = host
   end
@@ -161,9 +166,19 @@ class SymantecChecker
 
       if (chain.first.not_before < Time.at(1464739200).utc ||   # 2016-06-01 00:00:00 UTC
           chain.first.not_before >= Time.at(1512086400).utc)    # 2017-12-01 00:00:00 UTC
-        return [host, :M66]
+        # expiring in Chrome 66
+        if (chain.first.not_after <= M66_DEADLINE)
+          return [host, :M66]
+        else
+          return [host, :M66, :expiring_first]
+        end
       else
-        return [host, :M70]
+        # expiring in Chrome 70
+        if (chain.first.not_after <= M70_DEADLINE)
+          return [host, :M70]
+        else
+          return [host, :M70, :expiring_first]
+        end
       end
     else
       return [host, :good]
