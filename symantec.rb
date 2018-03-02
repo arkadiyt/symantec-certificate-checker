@@ -167,14 +167,14 @@ class SymantecChecker
       if (chain.first.not_before < Time.at(1464739200).utc ||   # 2016-06-01 00:00:00 UTC
           chain.first.not_before >= Time.at(1512086400).utc)    # 2017-12-01 00:00:00 UTC
         # expiring in Chrome 66
-        if (chain.first.not_after <= M66_DEADLINE)
+        if (chain.first.not_after >= M66_DEADLINE)
           return [host, :M66]
         else
           return [host, :M66, :expiring_first]
         end
       else
         # expiring in Chrome 70
-        if (chain.first.not_after <= M70_DEADLINE)
+        if (chain.first.not_after >= M70_DEADLINE)
           return [host, :M70]
         else
           return [host, :M70, :expiring_first]
