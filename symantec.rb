@@ -189,10 +189,10 @@ class SymantecChecker
 end
 
 def main(file)
-  hosts = CSV.open(file) do |csv|
-    csv.map do |index, host|
-      host
-    end
+  hosts = Array.new
+
+  CSV.foreach(file) do |host|
+    hosts.push(host[0])
   end
   puts "Read #{hosts.length} hosts"
 
