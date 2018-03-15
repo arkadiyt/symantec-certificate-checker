@@ -184,7 +184,7 @@ class SymantecChecker
       return [host, :good]
     end
   rescue StandardError => ex
-    return [host, :error]
+    return [host, ex.message]
   end
 end
 
